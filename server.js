@@ -22,7 +22,8 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/kaly-ecom
 }).then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ MongoDB Error:', err));
 
-// Models
+// --- MODELS ---
+
 const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
   description: String,
@@ -43,8 +44,18 @@ const promoSchema = new mongoose.Schema({
   active: { type: Boolean, default: true }
 });
 
+// Nouveau modèle pour les clients
+const userSchema = new mongoose.Schema({
+  fullName: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, default: 'customer' },
+  createdAt: { type: Date, default: Date.now }
+});
+
 const Product = mongoose.model('Product', productSchema);
 const PromoCode = mongoose.model('PromoCode', promoSchema);
+const User = mongoose.model('User', userSchema);
 
 // Cloudinary Config
 const cloudinary = require('cloudinary').v2;
@@ -54,25 +65,40 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Routes
+// --- ROUTES ---
+
+// Inscription des utilisateurs (Public)
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { fullName, email, password } = req.body;
+
+    // Vérifier si l'email existe déjà
+    const userExists = await User.findOne({ email: email.toLowerCase() });
+    if (userExists) {
+      return res.status(400).json({ error: 'Cet email est déjà utilisé' });
+    }
+
+    const user = new User({
+      fullName,
+      email: email.toLowerCase(),
+      password // Idéalement à hasher avec bcrypt plus tard
+    });
+
+    await user.save();
+    res.status(201).json({ message: 'Compte créé avec succès !' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Get all products
 app.get('/api/products', async (req, res) => {
   try {
     const { category, search, featured } = req.query;
     let query = {};
-    
-    if (category && category !== 'all') {
-      query.category = category;
-    }
-    
-    if (search) {
-      query.name = { $regex: search, $options: 'i' };
-    }
-
-    if (featured) {
-      query.featured = true;
-    }
+    if (category && category !== 'all') query.category = category;
+    if (search) query.name = { $regex: search, $options: 'i' };
+    if (featured) query.featured = true;
     
     const products = await Product.find(query).sort({ createdAt: -1 });
     res.json(products);
@@ -85,24 +111,8 @@ app.get('/api/products', async (req, res) => {
 app.get('/api/products/:id', async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
-    if (!product) {
-      return res.status(404).json({ error: 'Produit non trouvé' });
-    }
+    if (!product) return res.status(404).json({ error: 'Produit non trouvé' });
     res.json(product);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get similar products
-app.get('/api/products/:id/similar', async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id);
-    const similar = await Product.find({
-      category: product.category,
-      _id: { $ne: product._id }
-    }).limit(6);
-    res.json(similar);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -111,12 +121,9 @@ app.get('/api/products/:id/similar', async (req, res) => {
 // Create product (Admin)
 app.post('/api/products', async (req, res) => {
   try {
-    const { password } = req.headers;
-    
-    if (password !== process.env.ADMIN_PASSWORD) {
+    if (req.headers.password !== process.env.ADMIN_PASSWORD) {
       return res.status(401).json({ error: 'Non autorisé' });
     }
-
     const product = new Product(req.body);
     await product.save();
     res.status(201).json(product);
@@ -125,101 +132,16 @@ app.post('/api/products', async (req, res) => {
   }
 });
 
-// Update product (Admin)
-app.put('/api/products/:id', async (req, res) => {
-  try {
-    const { password } = req.headers;
-    
-    if (password !== process.env.ADMIN_PASSWORD) {
-      return res.status(401).json({ error: 'Non autorisé' });
-    }
-
-    const product = await Product.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    );
-    res.json(product);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Delete product (Admin)
-app.delete('/api/products/:id', async (req, res) => {
-  try {
-    const { password } = req.headers;
-    
-    if (password !== process.env.ADMIN_PASSWORD) {
-      return res.status(401).json({ error: 'Non autorisé' });
-    }
-
-    await Product.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Produit supprimé' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Upload image to Cloudinary
 app.post('/api/upload', async (req, res) => {
   try {
-    const { password } = req.headers;
-    
-    if (password !== process.env.ADMIN_PASSWORD) {
+    if (req.headers.password !== process.env.ADMIN_PASSWORD) {
       return res.status(401).json({ error: 'Non autorisé' });
     }
-
-    if (!req.files || !req.files.image) {
-      return res.status(400).json({ error: 'Aucune image fournie' });
-    }
-
+    if (!req.files || !req.files.image) return res.status(400).json({ error: 'Aucune image' });
     const file = req.files.image;
-    
-    const result = await cloudinary.uploader.upload(file.tempFilePath, {
-      folder: 'kaly-products'
-    });
-
+    const result = await cloudinary.uploader.upload(file.tempFilePath, { folder: 'kaly-products' });
     res.json({ url: result.secure_url });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get promo code
-app.get('/api/promo/:code', async (req, res) => {
-  try {
-    const promo = await PromoCode.findOne({
-      code: req.params.code.toUpperCase(),
-      active: true
-    });
-    
-    if (!promo) {
-      return res.status(404).json({ error: 'Code promo invalide' });
-    }
-    
-    if (promo.expiresAt && promo.expiresAt < new Date()) {
-      return res.status(400).json({ error: 'Code promo expiré' });
-    }
-    
-    res.json({ discount: promo.discount });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Create promo code (Admin)
-app.post('/api/promo', async (req, res) => {
-  try {
-    const { password } = req.headers;
-    
-    if (password !== process.env.ADMIN_PASSWORD) {
-      return res.status(401).json({ error: 'Non autorisé' });
-    }
-
-    const promo = new PromoCode(req.body);
-    await promo.save();
-    res.status(201).json(promo);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
