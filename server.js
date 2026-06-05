@@ -57,6 +57,7 @@ const userSchema = new mongoose.Schema({
   fullName:  { type: String, required: true },
   email:     { type: String, required: true, unique: true, lowercase: true },
   password:  { type: String, required: true },
+  phone:     { type: String, default: '' },
   role:      { type: String, default: 'user' },
   createdAt: { type: Date, default: Date.now }
 });
@@ -93,7 +94,7 @@ function authUser(req, res, next) {
 // Register
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { fullName, email, password } = req.body;
+    const { fullName, email, password, phone } = req.body;
 
     if (!fullName || !email || !password)
       return res.status(400).json({ message: 'Tous les champs sont requis' });
@@ -106,7 +107,7 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ message: 'Un compte existe deja avec cet email' });
 
     const hashed = await bcrypt.hash(password, 10);
-    const user = new User({ fullName, email: email.toLowerCase(), password: hashed });
+    const user = new User({ fullName, email: email.toLowerCase(), password: hashed, phone: phone || '' });
     await user.save();
 
     res.status(201).json({ message: 'Compte cree avec succes' });
@@ -163,6 +164,49 @@ app.get('/api/auth/me', authUser, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
+// Update own profile (name + phone)
+app.put('/api/auth/me', authUser, async (req, res) => {
+  try {
+    const { fullName, phone } = req.body;
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { fullName, phone },
+      { new: true }
+    ).select('-password');
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Change own password
+app.post('/api/auth/change-password', authUser, async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+    const user = await User.findById(req.user.id);
+    const match = await bcrypt.compare(oldPassword, user.password);
+    if (!match) return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+    if (!newPassword || newPassword.length < 6)
+      return res.status(400).json({ error: 'Nouveau mot de passe trop court (min 6)' });
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ message: 'Mot de passe mis a jour' });
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Delete own account (client self-delete)
+app.delete('/api/auth/me', authUser, async (req, res) => {
+  try {
+    await User.findByIdAndDelete(req.user.id);
+    res.json({ message: 'Compte supprime avec succes' });
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 
 /* ═══════════════════════════════════════════════════
    PRODUCT ROUTES
@@ -370,8 +414,20 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
+// Delete user (Admin)
+app.delete('/api/admin/users/:id', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Non autorise' });
+  try {
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Client supprime' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* ─── HEALTH ──────────────────────────────────────── */
 app.get('/', (req, res) => res.json({ message: 'KALY Backend API is running! 🪡' }));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log('🚀 Server running on port ' + PORT));
+                                                                                                       
